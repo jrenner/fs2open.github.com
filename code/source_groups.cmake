@@ -868,6 +868,8 @@ add_file_folder("MissionUI"
 	missionui/missionloopbrief.h
 	missionui/missionpause.cpp
 	missionui/missionpause.h
+	missionui/missiontacticalmap.cpp
+	missionui/missiontacticalmap.h
 	missionui/missionscreencommon.cpp
 	missionui/missionscreencommon.h
 	missionui/missionshipchoice.cpp

@@ -117,6 +117,7 @@
 #include "missionui/missiondebrief.h"
 #include "missionui/missionloopbrief.h"
 #include "missionui/missionpause.h"
+#include "missionui/missiontacticalmap.h"
 #include "missionui/missionscreencommon.h"
 #include "missionui/missionshipchoice.h"
 #include "missionui/missionweaponchoice.h"
@@ -703,6 +704,18 @@ float Supernova_last_glare = 0.0f;
 void game_sunspot_process(float frametime)
 {
 	TRACE_SCOPE(tracing::SunspotProcess);
+
+	// Treat the Sunglare option as a full accessibility toggle for camera-facing sun glare
+	// effects.  When disabled, suppress Sun_spot accumulation and the sun glow/lens-flare
+	// draws that are driven from this function, while leaving the actual sun bitmap and
+	// directional lighting handled by stars_draw_sun() intact.
+	if (!gr_sunglare_enabled()) {
+		Sun_spot = 0.0f;
+		Sun_drew = 0;
+		Supernova_last_glare = 0.0f;
+		return;
+	}
+
 	float Sun_spot_goal = 0.0f;
 
 	int supernova_sun_idx = 0;
@@ -4981,6 +4994,14 @@ void game_process_event( int current_state, int event )
 			gameseq_push_state(GS_STATE_GAME_PAUSED);
 			break;
 
+		case GS_EVENT_TACTICAL_MAP:
+			if (current_state == GS_STATE_TACTICAL_MAP) {
+				gameseq_pop_state();
+			} else if (current_state == GS_STATE_GAME_PLAY) {
+				gameseq_push_state(GS_STATE_TACTICAL_MAP);
+			}
+			break;
+
 		case GS_EVENT_DEBUG_PAUSE_GAME:
 			gameseq_push_state(GS_STATE_DEBUG_PAUSED);
 			break;
@@ -5295,6 +5316,7 @@ void game_leave_state( int old_state, int new_state )
 
 	switch (new_state) {
 		case GS_STATE_GAME_PAUSED:
+		case GS_STATE_TACTICAL_MAP:
 		case GS_STATE_DEBUG_PAUSED:
 		case GS_STATE_OPTIONS_MENU:
 		case GS_STATE_CONTROL_CONFIG:		
@@ -5549,6 +5571,11 @@ void game_leave_state( int old_state, int new_state )
 			if ( end_mission ) {
 				pause_close();
 			}
+			break;
+
+		case GS_STATE_TACTICAL_MAP:
+			game_start_time();
+			tactical_map_close();
 			break;
 
 		case GS_STATE_DEBUG_PAUSED:
@@ -5988,6 +6015,11 @@ void game_enter_state( int old_state, int new_state )
 			pause_init();
 			break;
 
+		case GS_STATE_TACTICAL_MAP:
+			game_stop_time();
+			tactical_map_init();
+			break;
+
 		case GS_STATE_DEBUG_PAUSED:
 		case GS_STATE_TRAINING_PAUSED:
 			#ifndef NDEBUG
@@ -6037,7 +6069,7 @@ void game_enter_state( int old_state, int new_state )
 			}
 
 			// Goober5000 - people may not have realized that pausing causes this state to be re-entered
-			if ((old_state != GS_STATE_GAME_PAUSED) && (old_state != GS_STATE_MULTI_PAUSED) && (old_state != GS_STATE_MAIN_MENU))
+			if ((old_state != GS_STATE_GAME_PAUSED) && (old_state != GS_STATE_TACTICAL_MAP) && (old_state != GS_STATE_MULTI_PAUSED) && (old_state != GS_STATE_MAIN_MENU))
 			{
 				if ( !Is_standalone )
 					radar_mission_init();
@@ -6087,7 +6119,7 @@ void game_enter_state( int old_state, int new_state )
 				event_music_first_pattern();	// start the first pattern
 			}
 
-			if ( !(Game_mode & GM_STANDALONE_SERVER) && ((old_state != GS_STATE_GAME_PAUSED) && (old_state != GS_STATE_MULTI_PAUSED)) ) {
+			if ( !(Game_mode & GM_STANDALONE_SERVER) && ((old_state != GS_STATE_GAME_PAUSED) && (old_state != GS_STATE_TACTICAL_MAP) && (old_state != GS_STATE_MULTI_PAUSED)) ) {
 				event_music_first_pattern();	// start the first pattern
 			}
 			player_restore_target_and_weapon_link_prefs();
@@ -6478,6 +6510,11 @@ void game_do_state(int state)
 			}
 				
 			pause_do();
+			break;
+
+		case GS_STATE_TACTICAL_MAP:
+			game_set_frametime(GS_STATE_TACTICAL_MAP);
+			tactical_map_do(flFrametime);
 			break;
 
 		case GS_STATE_DEBUG_PAUSED:

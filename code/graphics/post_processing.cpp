@@ -80,7 +80,7 @@ auto LightshaftsOption = options::OptionBuilder<bool>("Graphics.Lightshafts",
 // coverity[GLOBAL_INIT_ORDER] -- safe; OptionBuilder::finish() uses Meyers singleton
 auto SunglareOption = options::OptionBuilder<bool>("Graphics.Sunglare",
 					std::pair<const char*, int>{"Sunglare", 1880},
-					std::pair<const char*, int>{"Enables or disables glare from suns", 1881})
+					std::pair<const char*, int>{"Enables or disables sun glare, glow, and lens flare effects", 1881})
 			.category(std::make_pair("Graphics", 1825))
 			.default_func([]() { return Post_processing_enable_sunglare;})
 			.level(options::ExpertLevel::Advanced)
@@ -282,11 +282,8 @@ bool gr_sunglare_enabled()
 		return false;
 	}
 
-	// supernova glare gets to override this and actually display glare
-	if (supernova_stage() >= SUPERNOVA_STAGE::CLOSE) {
-		return true;
-	}
-
+	// This option is an accessibility toggle for camera-facing sun glare effects. Respect it
+	// consistently, including during supernova sequences.
 	return graphics::SunglareOption->getValue();
 }
 

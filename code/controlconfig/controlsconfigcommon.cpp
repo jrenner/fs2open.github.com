@@ -268,6 +268,7 @@ void control_config_common_init_bindings() {
 	(TOGGLE_HUD_SHADOWS,                              KEY_ALTED | KEY_L, -1, COMPUTER_TAB, 1781, "Toggle HUD Drop Shadows",          CC_TYPE_TRIGGER)
 	(HUD_TARGETBOX_TOGGLE_WIREFRAME,    KEY_ALTED | KEY_SHIFTED | KEY_Q, -1, COMPUTER_TAB, 1, "Toggle HUD Wireframe Target View", CC_TYPE_TRIGGER)
 	(TOGGLE_PHOTO_MODE,                                KEY_ALTED | KEY_1, -1, COMPUTER_TAB, 1908, "Toggle Photo Mode",                  CC_TYPE_TRIGGER, false, CONFLICT_GROUP_DEFAULT | CONFLICT_GROUP_PHOTO_MODE)
+	(TACTICAL_MAP_TOGGLE,                    KEY_ALTED | KEY_SHIFTED | KEY_M, -1, COMPUTER_TAB,    0, "Toggle Tactical Map",                 CC_TYPE_TRIGGER)
 	(PHOTO_MODE_FILTER_PREV,                                      KEY_UP, -1, COMPUTER_TAB, 1909, "Photo Mode Previous Parameter",         CC_TYPE_TRIGGER, false, CONFLICT_GROUP_PHOTO_MODE)
 	(PHOTO_MODE_FILTER_NEXT,                                    KEY_DOWN, -1, COMPUTER_TAB, 1910, "Photo Mode Next Parameter",             CC_TYPE_TRIGGER, false, CONFLICT_GROUP_PHOTO_MODE)
 	(PHOTO_MODE_FILTER_RESET,                          KEY_ALTED | KEY_2, -1, COMPUTER_TAB, 1911, "Photo Mode Reset Parameters",           CC_TYPE_TRIGGER, false, CONFLICT_GROUP_PHOTO_MODE)
@@ -441,6 +442,7 @@ SCP_unordered_map<SCP_string, IoActionId> old_text = {
 	{"Down Thrust",                             DOWN_SLIDE_THRUST},
 	{"Toggle HUD Wireframe Target View",        HUD_TARGETBOX_TOGGLE_WIREFRAME},
 	{"Toggle Photo Mode",                      TOGGLE_PHOTO_MODE},
+	{"Toggle Tactical Map",                   TACTICAL_MAP_TOGGLE},
 	{"Photo Mode Previous Parameter",             PHOTO_MODE_FILTER_PREV},
 	{"Photo Mode Next Parameter",                 PHOTO_MODE_FILTER_NEXT},
 	{"Photo Mode Reset Parameters",               PHOTO_MODE_FILTER_RESET},
@@ -1166,6 +1168,7 @@ void LoadEnumsIntoActionMap() {
 	ADD_ENUM_TO_ACTION_MAP(DOWN_SLIDE_THRUST)
 	ADD_ENUM_TO_ACTION_MAP(HUD_TARGETBOX_TOGGLE_WIREFRAME)
 	ADD_ENUM_TO_ACTION_MAP(TOGGLE_PHOTO_MODE)
+	ADD_ENUM_TO_ACTION_MAP(TACTICAL_MAP_TOGGLE)
 	ADD_ENUM_TO_ACTION_MAP(PHOTO_MODE_FILTER_PREV)
 	ADD_ENUM_TO_ACTION_MAP(PHOTO_MODE_FILTER_NEXT)
 	ADD_ENUM_TO_ACTION_MAP(PHOTO_MODE_FILTER_RESET)

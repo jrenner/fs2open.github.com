@@ -330,6 +330,7 @@ int Normal_key_set[] = {
 
 	TOGGLE_HUD,
 	TOGGLE_PHOTO_MODE,
+	TACTICAL_MAP_TOGGLE,
 	PHOTO_MODE_FILTER_PREV,
 	PHOTO_MODE_FILTER_NEXT,
 	PHOTO_MODE_FILTER_RESET,
@@ -2603,6 +2604,15 @@ int button_function(int n)
 
 		case TOGGLE_PHOTO_MODE:
 			game_toggle_photo_mode();
+			break;
+
+		case TACTICAL_MAP_TOGGLE:
+			if (Game_mode & GM_MULTIPLAYER) {
+				gamesnd_play_error_beep();
+				HUD_sourced_printf(HUD_SOURCE_HIDDEN, "%s", XSTR("Tactical map is unavailable in multiplayer", -1));
+			} else if (gameseq_get_state() == GS_STATE_GAME_PLAY) {
+				gameseq_post_event(GS_EVENT_TACTICAL_MAP);
+			}
 			break;
 
 		case PHOTO_MODE_FILTER_PREV:
