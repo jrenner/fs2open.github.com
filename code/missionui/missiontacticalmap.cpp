@@ -171,10 +171,15 @@ bool point_in_rect(int x, int y, const tactical_map_rect& rect)
 	return x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
 }
 
+int get_contact_icon_size(const tactical_map_contact& contact)
+{
+	return contact.radar_image_size > 0 ? contact.radar_image_size : DEFAULT_ICON_SIZE * 2;
+}
+
 void get_layout(tactical_map_rect& title_rect, tactical_map_rect& map_rect, tactical_map_rect& info_rect, tactical_map_rect& help_rect)
 {
-	const int screen_w = gr_screen.max_w_unscaled;
-	const int screen_h = gr_screen.max_h_unscaled;
+	const int screen_w = gr_screen.max_w;
+	const int screen_h = gr_screen.max_h;
 	const int title_h = 34;
 	const int help_h = 30;
 	const int margin = 10;
@@ -296,7 +301,7 @@ void project_contacts(const tactical_map_rect& map_rect)
 		contact.ground_y = map_rect.y + map_rect.h / 2 + Tactical_map_view.pan_y - fl2i(rel_z * Tactical_map_view.zoom);
 		contact.icon_x = contact.ground_x;
 		contact.icon_y = contact.ground_y - fl2i(rel_y * Tactical_map_view.zoom * Tactical_map_view.vertical_scale);
-		contact.hit_radius = std::max(MIN_HIT_RADIUS, DEFAULT_ICON_SIZE);
+		contact.hit_radius = std::max(MIN_HIT_RADIUS, get_contact_icon_size(contact) / 2 + 6);
 	}
 }
 
@@ -341,7 +346,7 @@ void draw_bitmap_icon(const tactical_map_contact& contact, int bitmap)
 		return;
 	}
 
-	const int desired_size = contact.radar_image_size > 0 ? contact.radar_image_size : DEFAULT_ICON_SIZE * 2;
+	const int desired_size = get_contact_icon_size(contact);
 	const float scale = clamp_float(static_cast<float>(desired_size) / static_cast<float>(std::max(w, h)), 0.15f, 2.5f);
 
 	vec3d scale_vec = vmd_zero_vector;
@@ -406,6 +411,19 @@ void draw_contact_icon(const tactical_map_contact& contact)
 	}
 }
 
+void draw_contact_label(const tactical_map_contact& contact)
+{
+	int label_w = 0;
+	int label_h = 0;
+	gr_get_string_size(&label_w, &label_h, contact.display_name.c_str());
+
+	gr_set_color_fast(&Color_text_normal);
+	gr_printf_no_resize(contact.icon_x - label_w / 2,
+		contact.icon_y - get_contact_icon_size(contact) / 2 - label_h - 3,
+		"%s",
+		contact.display_name.c_str());
+}
+
 void render_grid(const tactical_map_rect& map_rect)
 {
 	gr_set_clip(map_rect.x, map_rect.y, map_rect.w, map_rect.h, GR_RESIZE_NONE);
@@ -466,10 +484,7 @@ void render_contacts(const tactical_map_rect& map_rect)
 	}
 
 	for (const auto& contact : Tactical_map_contacts) {
-		if (same_contact(contact.id, Hovered_contact) || same_contact(contact.id, Selected_contact) || contact.is_player || contact.is_current_target) {
-			gr_set_color_fast(&Color_text_normal);
-			gr_printf_no_resize(contact.icon_x + DEFAULT_ICON_SIZE, contact.icon_y - DEFAULT_ICON_SIZE, "%s", contact.display_name.c_str());
-		}
+		draw_contact_label(contact);
 	}
 
 	gr_reset_clip();
@@ -566,7 +581,7 @@ void render_hover_tooltip()
 
 	int mx = 0;
 	int my = 0;
-	mouse_get_pos_unscaled(&mx, &my);
+	mouse_get_pos(&mx, &my);
 
 	int w = 0;
 	int h = 0;
@@ -583,7 +598,7 @@ void update_hover(const tactical_map_rect& map_rect)
 
 	int mx = 0;
 	int my = 0;
-	mouse_get_pos_unscaled(&mx, &my);
+	mouse_get_pos(&mx, &my);
 	if (!point_in_rect(mx, my, map_rect)) {
 		return;
 	}
@@ -599,6 +614,24 @@ void update_hover(const tactical_map_rect& map_rect)
 			Hovered_contact = contact.id;
 		}
 	}
+}
+
+const tactical_map_contact* find_closest_contact(int x, int y)
+{
+	const tactical_map_contact* closest = nullptr;
+	int best_dist_sq = INT_MAX;
+
+	for (const auto& contact : Tactical_map_contacts) {
+		const int dx = x - contact.icon_x;
+		const int dy = y - contact.icon_y;
+		const int dist_sq = dx * dx + dy * dy;
+		if (dist_sq < best_dist_sq) {
+			best_dist_sq = dist_sq;
+			closest = &contact;
+		}
+	}
+
+	return closest;
 }
 
 void target_selected_contact()
@@ -679,9 +712,10 @@ void handle_input(int key, const tactical_map_rect& map_rect)
 	if (mouse_down_count(MOUSE_LEFT_BUTTON, 1) > 0) {
 		int mx = 0;
 		int my = 0;
-		mouse_get_pos_unscaled(&mx, &my);
-		if (point_in_rect(mx, my, map_rect) && find_contact(Hovered_contact) != nullptr) {
-			Selected_contact = Hovered_contact;
+		mouse_get_pos(&mx, &my);
+		const auto closest_contact = point_in_rect(mx, my, map_rect) ? find_closest_contact(mx, my) : nullptr;
+		if (closest_contact != nullptr) {
+			Selected_contact = closest_contact->id;
 			target_selected_contact();
 		}
 	}
@@ -739,7 +773,7 @@ void tactical_map_do(float /*frametime*/)
 	tactical_map_rect help_rect;
 	get_layout(title_rect, map_rect, info_rect, help_rect);
 
-	const int key = Tactical_map_window.process() & ~KEY_DEBUGGED;
+	const int key = Tactical_map_window.process(-1, 0) & ~KEY_DEBUGGED;
 
 	collect_contacts();
 	validate_selection();
@@ -755,7 +789,7 @@ void tactical_map_do(float /*frametime*/)
 
 	gr_reset_clip();
 	gr_set_color_fast(&Tactical_bg_color);
-	gr_rect(0, 0, gr_screen.max_w_unscaled, gr_screen.max_h_unscaled, GR_RESIZE_NONE);
+	gr_rect(0, 0, gr_screen.max_w, gr_screen.max_h, GR_RESIZE_NONE);
 
 	render_title_bar(title_rect);
 	render_grid(map_rect);
