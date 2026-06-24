@@ -6,22 +6,28 @@
 #include "controlconfig/controlsconfig.h"
 #include "freespace.h"
 #include "gamesequence/gamesequence.h"
+#include "gamesnd/gamesnd.h"
 #include "globalincs/alphacolors.h"
 #include "graphics/2d.h"
 #include "graphics/font.h"
+#include "graphics/generic.h"
 #include "graphics/matrix.h"
 #include "graphics/render.h"
 #include "hud/hudmessage.h"
+#include "hud/hudsquadmsg.h"
+#include "hud/hudtarget.h"
 #include "iff_defs/iff_defs.h"
 #include "io/cursor.h"
 #include "io/key.h"
 #include "io/mouse.h"
 #include "localization/localize.h"
+#include "mission/missionbriefcommon.h"
 #include "mission/missionmessage.h"
 #include "object/object.h"
 #include "object/objectshield.h"
 #include "playerman/player.h"
 #include "ship/ship.h"
+#include "ship/subsysdamage.h"
 #include "sound/audiostr.h"
 #include "ui/ui.h"
 #include "weapon/weapon.h"
@@ -75,6 +81,28 @@ struct tactical_map_contact {
 	bool is_current_target = false;
 };
 
+enum class tactical_recipient_type {
+	AllFighters,
+	Wing,
+};
+
+struct tactical_recipient_button {
+	tactical_map_rect rect;
+	tactical_recipient_type type = tactical_recipient_type::AllFighters;
+	int wingnum = -1;
+	SCP_string label;
+	bool selected = false;
+	bool active = true;
+};
+
+struct tactical_command_button {
+	tactical_map_rect rect;
+	int command = NO_ORDER_ITEM;
+	int hotkey = -1;
+	SCP_string label;
+	bool active = false;
+};
+
 struct tactical_map_view {
 	float zoom = 1.0f;
 	float vertical_scale = 0.08f;
@@ -87,9 +115,13 @@ struct tactical_map_view {
 bool Tactical_map_active = false;
 UI_WINDOW Tactical_map_window;
 SCP_vector<tactical_map_contact> Tactical_map_contacts;
+SCP_vector<tactical_recipient_button> Tactical_recipient_buttons;
+SCP_vector<tactical_command_button> Tactical_command_buttons;
 tactical_map_contact_id Selected_contact;
 tactical_map_contact_id Hovered_contact;
 tactical_map_view Tactical_map_view;
+tactical_recipient_type Selected_recipient_type = tactical_recipient_type::AllFighters;
+int Selected_recipient_wing = -1;
 
 color Tactical_bg_color;
 color Tactical_panel_color;
@@ -101,6 +133,10 @@ color Tactical_hover_color;
 color Tactical_selected_color;
 color Tactical_target_color;
 color Tactical_text_dim_color;
+color Tactical_label_bg_color;
+color Tactical_button_color;
+color Tactical_button_selected_color;
+color Tactical_button_disabled_color;
 
 bool Tactical_colors_initialized = false;
 
@@ -108,6 +144,8 @@ constexpr float MIN_ZOOM = 0.0025f;
 constexpr float MAX_ZOOM = 8.0f;
 constexpr int DEFAULT_ICON_SIZE = 12;
 constexpr int MIN_HIT_RADIUS = 8;
+constexpr int COMMAND_ROW_H = 22;
+constexpr int MAX_RECIPIENT_ROWS = 5;
 
 bool valid_contact_id(const tactical_map_contact_id& id)
 {
@@ -157,6 +195,10 @@ void init_colors()
 	gr_init_alphacolor(&Tactical_selected_color, 255, 220, 80, 255);
 	gr_init_alphacolor(&Tactical_target_color, 120, 220, 255, 255);
 	gr_init_alphacolor(&Tactical_text_dim_color, 150, 170, 180, 255);
+	gr_init_alphacolor(&Tactical_label_bg_color, 2, 6, 8, 190);
+	gr_init_alphacolor(&Tactical_button_color, 20, 38, 50, 230);
+	gr_init_alphacolor(&Tactical_button_selected_color, 46, 76, 90, 245);
+	gr_init_alphacolor(&Tactical_button_disabled_color, 14, 22, 28, 180);
 
 	Tactical_colors_initialized = true;
 }
@@ -171,8 +213,162 @@ bool point_in_rect(int x, int y, const tactical_map_rect& rect)
 	return x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
 }
 
+bool contact_can_be_targeted(const tactical_map_contact& contact)
+{
+	return !contact.is_player && valid_contact_id(contact.id);
+}
+
+bool ship_can_receive_tactical_orders(int shipnum)
+{
+	if (shipnum < 0 || shipnum >= MAX_SHIPS || Player_ship == nullptr) {
+		return false;
+	}
+
+	const auto& shipp = Ships[shipnum];
+	if (shipp.objnum < 0 || shipp.objnum >= MAX_OBJECTS || &Objects[shipp.objnum] == Player_obj) {
+		return false;
+	}
+
+	if (shipp.team != Player_ship->team || shipp.is_dying_or_departing() || shipp.orders_accepted.empty()) {
+		return false;
+	}
+
+	const auto& sip = Ship_info[shipp.ship_info_index];
+	if (sip.class_type < 0 || !Ship_types[sip.class_type].flags[Ship::Type_Info_Flags::AI_accept_player_orders]) {
+		return false;
+	}
+
+	return true;
+}
+
+bool wing_can_receive_tactical_orders(int wingnum)
+{
+	if (wingnum < 0 || wingnum >= Num_wings) {
+		return false;
+	}
+
+	const auto& wing = Wings[wingnum];
+	if (wing.flags[Ship::Wing_Flags::Gone, Ship::Wing_Flags::Departing] || wing.current_count <= 0) {
+		return false;
+	}
+
+	for (int idx = 0; idx < wing.current_count; idx++) {
+		if (ship_can_receive_tactical_orders(wing.ship_index[idx])) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void add_wing_recipient(SCP_vector<int>& wingnums, int wingnum)
+{
+	if (!wing_can_receive_tactical_orders(wingnum)) {
+		return;
+	}
+
+	if (std::find(wingnums.begin(), wingnums.end(), wingnum) == wingnums.end()) {
+		wingnums.push_back(wingnum);
+	}
+}
+
+SCP_vector<int> get_tactical_order_wings()
+{
+	SCP_vector<int> wingnums;
+
+	for (int idx = 0; idx < MAX_STARTING_WINGS; idx++) {
+		add_wing_recipient(wingnums, Starting_wings[idx]);
+	}
+
+	for (int wingnum = 0; wingnum < Num_wings; wingnum++) {
+		add_wing_recipient(wingnums, wingnum);
+	}
+
+	return wingnums;
+}
+
+void normalize_selected_recipient()
+{
+	const auto wingnums = get_tactical_order_wings();
+	if (Selected_recipient_type == tactical_recipient_type::Wing &&
+	    std::find(wingnums.begin(), wingnums.end(), Selected_recipient_wing) == wingnums.end()) {
+		Selected_recipient_type = tactical_recipient_type::AllFighters;
+		Selected_recipient_wing = -1;
+	}
+}
+
+int briefing_icon_type_for_contact(const tactical_map_contact& contact)
+{
+	const auto& sip = Ship_info[contact.ship_class];
+
+	if (contact.is_player) {
+		return sip.flags[Ship::Info_Flags::Bomber] ? ICON_BOMBER_PLAYER : ICON_FIGHTER_PLAYER;
+	}
+
+	if (sip.flags[Ship::Info_Flags::Support]) {
+		return ICON_SUPPORT_SHIP;
+	} else if (sip.flags[Ship::Info_Flags::Bomber]) {
+		return ICON_BOMBER;
+	} else if (sip.flags[Ship::Info_Flags::Fighter]) {
+		return ICON_FIGHTER;
+	} else if (sip.flags[Ship::Info_Flags::Knossos_device]) {
+		return ICON_KNOSSOS_DEVICE;
+	} else if (sip.flags[Ship::Info_Flags::Supercap]) {
+		return ICON_SUPERCAP;
+	} else if (sip.flags[Ship::Info_Flags::Capital]) {
+		return ICON_CAPITAL;
+	} else if (sip.flags[Ship::Info_Flags::Corvette]) {
+		return ICON_CORVETTE;
+	} else if (sip.flags[Ship::Info_Flags::Cruiser]) {
+		return ICON_CRUISER;
+	} else if (sip.flags[Ship::Info_Flags::Gas_miner]) {
+		return ICON_GAS_MINER;
+	} else if (sip.flags[Ship::Info_Flags::Awacs] || sip.flags[Ship::Info_Flags::Has_awacs]) {
+		return ICON_AWACS;
+	} else if (sip.flags[Ship::Info_Flags::Sentrygun]) {
+		return ICON_SENTRYGUN;
+	} else if (sip.flags[Ship::Info_Flags::Transport]) {
+		return ICON_TRANSPORT;
+	} else if (sip.flags[Ship::Info_Flags::Freighter]) {
+		return ICON_FREIGHTER_NO_CARGO;
+	} else if (sip.flags[Ship::Info_Flags::Cargo]) {
+		return ICON_CARGO;
+	}
+
+	return ICON_UNKNOWN;
+}
+
+int get_briefing_icon_bitmap(const tactical_map_contact& contact, bool selected)
+{
+	brief_icon icon = {};
+	icon.ship_class = contact.ship_class;
+	icon.type = briefing_icon_type_for_contact(contact);
+	icon.team = contact.team;
+
+	auto bii = brief_get_icon_info(&icon);
+	if (bii == nullptr) {
+		return -1;
+	}
+
+	if (bii->regular.first_frame < 0 && generic_anim_load(&bii->regular) < 0) {
+		return -1;
+	}
+
+	if (selected && bii->regular.num_frames > 1) {
+		return bii->regular.first_frame + 1;
+	}
+
+	return bii->regular.first_frame;
+}
+
 int get_contact_icon_size(const tactical_map_contact& contact)
 {
+	if (Ship_info[contact.ship_class].is_huge_ship()) {
+		return DEFAULT_ICON_SIZE * 3;
+	} else if (Ship_info[contact.ship_class].is_big_ship()) {
+		return DEFAULT_ICON_SIZE * 2 + 8;
+	}
+
 	return contact.radar_image_size > 0 ? contact.radar_image_size : DEFAULT_ICON_SIZE * 2;
 }
 
@@ -338,7 +534,7 @@ void draw_text_line(int x, int& y, const char* label, const SCP_string& value, c
 	draw_text_line(x, y, label, value.c_str(), value_color);
 }
 
-void draw_bitmap_icon(const tactical_map_contact& contact, int bitmap)
+void draw_bitmap_icon(const tactical_map_contact& contact, int bitmap, bool use_iff_filter)
 {
 	int w = 0;
 	int h = 0;
@@ -358,7 +554,10 @@ void draw_bitmap_icon(const tactical_map_contact& contact, int bitmap)
 	const int y = fl2i(static_cast<float>(contact.icon_y) / scale - static_cast<float>(h) * 0.5f);
 
 	gr_push_scale_matrix(&scale_vec);
-	gr_set_bitmap(bitmap, GR_ALPHABLEND_NONE, GR_BITBLT_MODE_NORMAL, 1.0f);
+	if (use_iff_filter) {
+		gr_set_color_fast(&contact.iff_color);
+	}
+	gr_set_bitmap(bitmap, use_iff_filter ? GR_ALPHABLEND_FILTER : GR_ALPHABLEND_NONE, GR_BITBLT_MODE_NORMAL, 1.0f);
 	gr_bitmap(x, y, GR_RESIZE_NONE);
 	gr_pop_scale_matrix();
 }
@@ -387,41 +586,250 @@ void draw_fallback_icon(const tactical_map_contact& contact)
 
 void draw_contact_icon(const tactical_map_contact& contact)
 {
-	if (contact.radar_image_2d >= 0) {
-		draw_bitmap_icon(contact, contact.radar_image_2d);
+	const bool selected = same_contact(contact.id, Selected_contact);
+	const int briefing_bitmap = get_briefing_icon_bitmap(contact, selected);
+
+	if (briefing_bitmap >= 0) {
+		draw_bitmap_icon(contact, briefing_bitmap, true);
+	} else if (contact.radar_image_2d >= 0) {
+		draw_bitmap_icon(contact, contact.radar_image_2d, false);
 	} else if (contact.radar_color_image_2d >= 0) {
-		draw_bitmap_icon(contact, contact.radar_color_image_2d);
+		draw_bitmap_icon(contact, contact.radar_color_image_2d, true);
 	} else {
 		draw_fallback_icon(contact);
 	}
 
 	if (contact.is_current_target) {
 		gr_set_color_fast(&Tactical_target_color);
-		gr_circle(contact.icon_x, contact.icon_y, DEFAULT_ICON_SIZE * 2 + 8, GR_RESIZE_NONE);
+		gr_circle(contact.icon_x, contact.icon_y, get_contact_icon_size(contact) + 14, GR_RESIZE_NONE);
 	}
 
 	if (same_contact(contact.id, Hovered_contact)) {
 		gr_set_color_fast(&Tactical_hover_color);
-		gr_circle(contact.icon_x, contact.icon_y, DEFAULT_ICON_SIZE * 2 + 3, GR_RESIZE_NONE);
+		gr_circle(contact.icon_x, contact.icon_y, get_contact_icon_size(contact) + 8, GR_RESIZE_NONE);
 	}
 
-	if (same_contact(contact.id, Selected_contact)) {
+	if (selected) {
 		gr_set_color_fast(&Tactical_selected_color);
-		gr_circle(contact.icon_x, contact.icon_y, DEFAULT_ICON_SIZE * 2 + 10, GR_RESIZE_NONE);
+		gr_circle(contact.icon_x, contact.icon_y, get_contact_icon_size(contact) + 18, GR_RESIZE_NONE);
 	}
 }
 
-void draw_contact_label(const tactical_map_contact& contact)
+void draw_contact_label(const tactical_map_contact& contact, const tactical_map_rect& map_rect)
 {
 	int label_w = 0;
 	int label_h = 0;
 	gr_get_string_size(&label_w, &label_h, contact.display_name.c_str());
 
+	const int label_x = std::max(map_rect.x + 3, std::min(contact.icon_x - label_w / 2, map_rect.x + map_rect.w - label_w - 3));
+	const int label_y = std::max(map_rect.y + 3, contact.icon_y - get_contact_icon_size(contact) / 2 - label_h - 5);
+
+	gr_set_color_fast(&Tactical_label_bg_color);
+	gr_rect(label_x - 3, label_y - 2, label_w + 6, label_h + 4, GR_RESIZE_NONE);
 	gr_set_color_fast(&Color_text_normal);
-	gr_printf_no_resize(contact.icon_x - label_w / 2,
-		contact.icon_y - get_contact_icon_size(contact) / 2 - label_h - 3,
-		"%s",
-		contact.display_name.c_str());
+	gr_printf_no_resize(label_x, label_y, "%s", contact.display_name.c_str());
+}
+
+bool command_applies_to_selected_target(int command, const tactical_map_contact* contact)
+{
+	if (contact == nullptr || !contact_can_be_targeted(*contact) || Player_ship == nullptr || Player_ai == nullptr) {
+		return false;
+	}
+
+	const auto& target_ship = Ships[contact->shipnum];
+	if (target_ship.orders_allowed_against.find(command) == target_ship.orders_allowed_against.end()) {
+		return false;
+	}
+
+	const bool friendly_target = target_ship.team == Player_ship->team;
+	switch (command) {
+		case ATTACK_TARGET_ITEM:
+		case IGNORE_TARGET_ITEM:
+			return !friendly_target;
+
+		case DISABLE_TARGET_ITEM:
+			return !friendly_target && !target_ship.flags[Ship::Ship_Flags::Disabled];
+
+		case DISARM_TARGET_ITEM:
+			return !friendly_target &&
+			       target_ship.subsys_info[SUBSYSTEM_TURRET].type_count > 0 &&
+			       target_ship.subsys_info[SUBSYSTEM_TURRET].aggregate_current_hits > 0.0f;
+
+		case PROTECT_TARGET_ITEM:
+			return friendly_target;
+
+		default:
+			return false;
+	}
+}
+
+void build_panel_buttons(const tactical_map_rect& info_rect)
+{
+	Tactical_recipient_buttons.clear();
+	Tactical_command_buttons.clear();
+
+	const int x = info_rect.x + 14;
+	const int w = info_rect.w - 28;
+	int y = info_rect.y + 300;
+
+	tactical_recipient_button all_button;
+	all_button.rect = {x, y, w, COMMAND_ROW_H};
+	all_button.type = tactical_recipient_type::AllFighters;
+	all_button.label = XSTR("All fighters", -1);
+	all_button.selected = Selected_recipient_type == tactical_recipient_type::AllFighters;
+	Tactical_recipient_buttons.push_back(all_button);
+	y += COMMAND_ROW_H + 4;
+
+	const auto wingnums = get_tactical_order_wings();
+	int wing_rows = 0;
+	for (auto wingnum : wingnums) {
+		if (wing_rows >= MAX_RECIPIENT_ROWS - 1) {
+			break;
+		}
+
+		tactical_recipient_button button;
+		button.rect = {x, y, w, COMMAND_ROW_H};
+		button.type = tactical_recipient_type::Wing;
+		button.wingnum = wingnum;
+		button.label = Wings[wingnum].get_display_name();
+		button.selected = Selected_recipient_type == tactical_recipient_type::Wing && Selected_recipient_wing == wingnum;
+		Tactical_recipient_buttons.push_back(button);
+
+		y += COMMAND_ROW_H + 4;
+		wing_rows++;
+	}
+
+	y += 24;
+	const tactical_map_contact* contact = find_contact(Selected_contact);
+	const struct {
+		int command;
+		int hotkey;
+		const char* key_text;
+	} command_defs[] = {
+		{ATTACK_TARGET_ITEM, KEY_A, "A"},
+		{PROTECT_TARGET_ITEM, KEY_P, "P"},
+		{DISABLE_TARGET_ITEM, KEY_E, "E"},
+		{DISARM_TARGET_ITEM, KEY_M, "M"},
+		{IGNORE_TARGET_ITEM, KEY_I, "I"},
+	};
+
+	for (const auto& def : command_defs) {
+		tactical_command_button button;
+		button.rect = {x, y, w, COMMAND_ROW_H};
+		button.command = def.command;
+		button.hotkey = def.hotkey;
+		button.label = SCP_string(def.key_text) + "  " + Player_orders[def.command].localized_name;
+		button.active = command_applies_to_selected_target(def.command, contact);
+		Tactical_command_buttons.push_back(button);
+		y += COMMAND_ROW_H + 4;
+	}
+}
+
+void draw_panel_button(const tactical_map_rect& rect, const char* text, bool selected, bool active)
+{
+	gr_set_color_fast(active ? (selected ? &Tactical_button_selected_color : &Tactical_button_color) : &Tactical_button_disabled_color);
+	gr_rect(rect.x, rect.y, rect.w, rect.h, GR_RESIZE_NONE);
+	gr_set_color_fast(active ? (selected ? &Tactical_selected_color : &Color_text_normal) : &Tactical_text_dim_color);
+	gr_printf_no_resize(rect.x + 8, rect.y + 5, "%s", text);
+}
+
+void render_command_panel(const tactical_map_rect& info_rect)
+{
+	const int x = info_rect.x + 14;
+	int y = !Tactical_recipient_buttons.empty() ? Tactical_recipient_buttons.front().rect.y - 26 : info_rect.y + info_rect.h - 300;
+
+	gr_set_color_fast(&Color_text_heading);
+	gr_printf_no_resize(x, y, "%s", XSTR("Orders", -1));
+	y += 22;
+
+	gr_set_color_fast(&Tactical_text_dim_color);
+	gr_printf_no_resize(x, y, "%s", XSTR("Recipient", -1));
+
+	for (const auto& button : Tactical_recipient_buttons) {
+		draw_panel_button(button.rect, button.label.c_str(), button.selected, button.active);
+	}
+
+	const int command_header_y = Tactical_command_buttons.empty() ? y + 28 : Tactical_command_buttons.front().rect.y - 22;
+	gr_set_color_fast(&Tactical_text_dim_color);
+	gr_printf_no_resize(x, command_header_y, "%s", XSTR("Command", -1));
+
+	for (const auto& button : Tactical_command_buttons) {
+		draw_panel_button(button.rect, button.label.c_str(), false, button.active);
+	}
+}
+
+bool issue_tactical_command(int command)
+{
+	const auto contact = find_contact(Selected_contact);
+	if (!command_applies_to_selected_target(command, contact)) {
+		gamesnd_play_error_beep();
+		return false;
+	}
+
+	if (hud_communications_state(Player_ship) != COMM_OK) {
+		HUD_sourced_printf(HUD_SOURCE_HIDDEN, "%s", XSTR("Messaging is restricted due to communications damage", 331));
+		gamesnd_play_error_beep();
+		return false;
+	}
+
+	set_target_objnum(Player_ai, contact->id.objnum);
+
+	if (Selected_recipient_type == tactical_recipient_type::Wing) {
+		if (!wing_can_receive_tactical_orders(Selected_recipient_wing)) {
+			gamesnd_play_error_beep();
+			return false;
+		}
+
+		hud_squadmsg_send_wing_command(Selected_recipient_wing, command, 1);
+	} else {
+		hud_squadmsg_send_to_all_fighters(command);
+	}
+
+	HUD_sourced_printf(HUD_SOURCE_HIDDEN, "%s", XSTR("Tactical order issued", -1));
+	return true;
+}
+
+void cycle_tactical_recipient()
+{
+	if (Tactical_recipient_buttons.empty()) {
+		return;
+	}
+
+	int current_index = 0;
+	for (int idx = 0; idx < static_cast<int>(Tactical_recipient_buttons.size()); idx++) {
+		if (Tactical_recipient_buttons[idx].selected) {
+			current_index = idx;
+			break;
+		}
+	}
+
+	const auto& next = Tactical_recipient_buttons[(current_index + 1) % Tactical_recipient_buttons.size()];
+	Selected_recipient_type = next.type;
+	Selected_recipient_wing = next.wingnum;
+}
+
+bool handle_panel_click(int mx, int my)
+{
+	for (const auto& button : Tactical_recipient_buttons) {
+		if (point_in_rect(mx, my, button.rect) && button.active) {
+			Selected_recipient_type = button.type;
+			Selected_recipient_wing = button.wingnum;
+			return true;
+		}
+	}
+
+	for (const auto& button : Tactical_command_buttons) {
+		if (point_in_rect(mx, my, button.rect)) {
+			if (button.active) {
+				issue_tactical_command(button.command);
+			} else {
+				gamesnd_play_error_beep();
+			}
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void render_grid(const tactical_map_rect& map_rect)
@@ -484,7 +892,7 @@ void render_contacts(const tactical_map_rect& map_rect)
 	}
 
 	for (const auto& contact : Tactical_map_contacts) {
-		draw_contact_label(contact);
+		draw_contact_label(contact, map_rect);
 	}
 
 	gr_reset_clip();
@@ -507,7 +915,7 @@ void render_help_bar(const tactical_map_rect& help_rect)
 	gr_set_color_fast(&Tactical_panel_color);
 	gr_rect(help_rect.x, help_rect.y, help_rect.w, help_rect.h, GR_RESIZE_NONE);
 	gr_set_color_fast(&Color_text_normal);
-	gr_printf_no_resize(help_rect.x + 12, help_rect.y + 8, "%s", XSTR("Left click: select/target   Right drag/arrows: pan   Wheel/+/-: zoom   R: reset", -1));
+	gr_printf_no_resize(help_rect.x + 12, help_rect.y + 8, "%s", XSTR("Left click: select/target/order   Tab: recipient   A/P/E/M/I: orders   Right drag/arrows: pan   Wheel/+/-: zoom   R: reset", -1));
 }
 
 void render_info_panel(const tactical_map_rect& info_rect)
@@ -528,6 +936,7 @@ void render_info_panel(const tactical_map_rect& info_rect)
 	if (contact == nullptr) {
 		gr_set_color_fast(&Tactical_text_dim_color);
 		gr_printf_no_resize(x, y, "%s", Tactical_map_contacts.empty() ? XSTR("No contacts", -1) : XSTR("Select a ship icon", -1));
+		render_command_panel(info_rect);
 		return;
 	}
 
@@ -570,6 +979,8 @@ void render_info_panel(const tactical_map_rect& info_rect)
 	} else if (contact->is_current_target) {
 		draw_text_line(x, y, XSTR("Status:", -1), XSTR("Current target", -1));
 	}
+
+	render_command_panel(info_rect);
 }
 
 void render_hover_tooltip()
@@ -616,12 +1027,16 @@ void update_hover(const tactical_map_rect& map_rect)
 	}
 }
 
-const tactical_map_contact* find_closest_contact(int x, int y)
+const tactical_map_contact* find_closest_targetable_contact(int x, int y)
 {
 	const tactical_map_contact* closest = nullptr;
 	int best_dist_sq = INT_MAX;
 
 	for (const auto& contact : Tactical_map_contacts) {
+		if (!contact_can_be_targeted(contact)) {
+			continue;
+		}
+
 		const int dx = x - contact.icon_x;
 		const int dy = y - contact.icon_y;
 		const int dist_sq = dx * dx + dy * dy;
@@ -640,11 +1055,17 @@ void target_selected_contact()
 		return;
 	}
 
+	const auto contact = find_contact(Selected_contact);
+	if (contact == nullptr || !contact_can_be_targeted(*contact)) {
+		gamesnd_play_error_beep();
+		return;
+	}
+
 	set_target_objnum(Player_ai, Selected_contact.objnum);
 	HUD_sourced_printf(HUD_SOURCE_HIDDEN, "%s", XSTR("Target selected from tactical map", -1));
 }
 
-void handle_input(int key, const tactical_map_rect& map_rect)
+void handle_input(int key, const tactical_map_rect& map_rect, const tactical_map_rect& info_rect)
 {
 	if (key == KEY_ESC || check_control(TACTICAL_MAP_TOGGLE, key)) {
 		gameseq_post_event(GS_EVENT_PREVIOUS_STATE);
@@ -657,6 +1078,10 @@ void handle_input(int key, const tactical_map_rect& map_rect)
 	switch (masked_key) {
 		case KEY_R:
 			Tactical_map_view.auto_fit_pending = true;
+			break;
+
+		case KEY_TAB:
+			cycle_tactical_recipient();
 			break;
 
 		case KEY_LEFT:
@@ -690,6 +1115,19 @@ void handle_input(int key, const tactical_map_rect& map_rect)
 				target_selected_contact();
 			}
 			break;
+
+		case KEY_A:
+		case KEY_P:
+		case KEY_E:
+		case KEY_M:
+		case KEY_I:
+			for (const auto& button : Tactical_command_buttons) {
+				if (button.hotkey == masked_key) {
+					issue_tactical_command(button.command);
+					break;
+				}
+			}
+			break;
 	}
 
 	int wheel_x = 0;
@@ -713,7 +1151,12 @@ void handle_input(int key, const tactical_map_rect& map_rect)
 		int mx = 0;
 		int my = 0;
 		mouse_get_pos(&mx, &my);
-		const auto closest_contact = point_in_rect(mx, my, map_rect) ? find_closest_contact(mx, my) : nullptr;
+
+		if (point_in_rect(mx, my, info_rect) && handle_panel_click(mx, my)) {
+			return;
+		}
+
+		const auto closest_contact = point_in_rect(mx, my, map_rect) ? find_closest_targetable_contact(mx, my) : nullptr;
 		if (closest_contact != nullptr) {
 			Selected_contact = closest_contact->id;
 			target_selected_contact();
@@ -756,6 +1199,8 @@ void tactical_map_init()
 	clear_contact_id(Selected_contact);
 	clear_contact_id(Hovered_contact);
 	Tactical_map_view = tactical_map_view();
+	Selected_recipient_type = tactical_recipient_type::AllFighters;
+	Selected_recipient_wing = -1;
 	Tactical_map_active = true;
 }
 
@@ -777,6 +1222,7 @@ void tactical_map_do(float /*frametime*/)
 
 	collect_contacts();
 	validate_selection();
+	normalize_selected_recipient();
 
 	if (Tactical_map_view.auto_fit_pending) {
 		auto_fit_contacts(map_rect);
@@ -785,7 +1231,8 @@ void tactical_map_do(float /*frametime*/)
 
 	project_contacts(map_rect);
 	update_hover(map_rect);
-	handle_input(key, map_rect);
+	build_panel_buttons(info_rect);
+	handle_input(key, map_rect, info_rect);
 
 	gr_reset_clip();
 	gr_set_color_fast(&Tactical_bg_color);
@@ -822,6 +1269,8 @@ void tactical_map_close()
 	io::mouse::CursorManager::get()->popStatus();
 
 	Tactical_map_contacts.clear();
+	Tactical_recipient_buttons.clear();
+	Tactical_command_buttons.clear();
 	clear_contact_id(Selected_contact);
 	clear_contact_id(Hovered_contact);
 	Tactical_map_active = false;
