@@ -228,7 +228,7 @@ bool ship_can_receive_tactical_orders(int shipnum)
 		return false;
 	}
 
-	const auto& shipp = Ships[shipnum];
+	auto& shipp = Ships[shipnum];
 	if (shipp.objnum < 0 || shipp.objnum >= MAX_OBJECTS) {
 		return false;
 	}

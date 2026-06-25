@@ -1074,6 +1074,7 @@ int hud_squadmsg_send_to_all_fighters( int command, int player_num )
 
 	for ( i = 0; i < Num_wings; i++ ) {
 		int shipnum;
+		object* ship_objp;
 
 		if (!wing_target_valid)
 			continue;
@@ -1091,11 +1092,18 @@ int hud_squadmsg_send_to_all_fighters( int command, int player_num )
 		shipnum = Wings[i].ship_index[Wings[i].special_ship];
 
 		// if special ship isn't valid then just move on
-		if (shipnum < 0)
+		if (shipnum < 0 || shipnum >= MAX_SHIPS)
 			continue;
 
 		shipp = &Ships[shipnum];
-		if (!hud_squadmsg_ship_valid(shipp, &Objects[shipp->objnum]))
+		if (shipp->objnum < 0 || shipp->objnum >= MAX_OBJECTS)
+			continue;
+
+		ship_objp = &Objects[shipp->objnum];
+		if (ship_objp->type != OBJ_SHIP || ship_objp->instance != shipnum)
+			continue;
+
+		if (!hud_squadmsg_ship_valid(shipp, ship_objp))
 			continue;
 
 		// can't message if not on players team
@@ -1144,6 +1152,8 @@ int hud_squadmsg_send_to_all_fighters( int command, int player_num )
 		if (objp->flags[Object::Object_Flags::Should_be_dead])
 			continue;
 		if ( objp->type != OBJ_SHIP )
+			continue;
+		if (objp->instance < 0 || objp->instance >= MAX_SHIPS)
 			continue;
 
 		// don't send messge to ships not on player's team, or that are in a wing.
