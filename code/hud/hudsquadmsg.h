@@ -30,6 +30,7 @@
 #define MESSAGE_ALL_FIGHTERS		-999
 
 class object;
+struct ai_info;
 struct reinforcements;
 
 // defines for messages that can be sent from the player.  Indexes into Player_orders
@@ -181,7 +182,7 @@ extern void hud_squadmsg_rearm_shortcut();
 
 extern int hud_squadmsg_send_ship_command( int shipnum, int command, int send_message, int update_history = SQUADMSG_HISTORY_ADD_ENTRY, int player_num = -1 );
 extern int hud_squadmsg_send_wing_command( int wingnum, int command, int send_message, int update_history = SQUADMSG_HISTORY_ADD_ENTRY, int player_num = -1 );
-extern void hud_squadmsg_send_to_all_fighters( int command, int player_num = -1 );
+extern int hud_squadmsg_send_to_all_fighters( int command, int player_num = -1 );
 extern void hud_squadmsg_call_reinforcement(reinforcements &reinforcement, int player_num = -1);
 
 extern int hud_squadmsg_reinforcements_available(int team);
@@ -198,6 +199,7 @@ void hud_squadmsg_selection_select();
 
 // Added for checking message validity - Mjn
 bool hud_squadmsg_ship_order_valid(int shipnum, int order);
+bool hud_squadmsg_is_target_order_valid(size_t order, ai_info *aip, bool isWing);
 
 void Hud_set_lua_key(int selection);
 

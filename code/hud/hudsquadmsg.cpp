@@ -1019,24 +1019,27 @@ bool hud_squadmsg_run_order_issued_hook(int command, ship* sendingShip, ship* re
 }
 
 // function to send an order to all fighters/bombers.
-void hud_squadmsg_send_to_all_fighters( int command, int player_num )
+int hud_squadmsg_send_to_all_fighters( int command, int player_num )
 {
 	ai_info *aip;
 	ship *shipp, *ordering_shipp;
 	int i, send_message;
+	bool order_sent = false;
+	int target_shipnum = -1;
+	int target_wingnum = -1;
 
 	// quick short circuit here because of actually showing comm menu even though you cannot message.
 	// just a safety net.
 	if ( (Game_mode & GM_MULTIPLAYER) && (player_num != -1) ) {
 		if ( !multi_can_message(&Net_players[player_num]) ) {
-			return;
+			return 0;
 		}
 	}
 
 	// check for multiplayer mode
 	if(MULTIPLAYER_CLIENT) {
 		send_player_order_packet(SQUAD_MSG_ALL, 0, command);
-		return;
+		return 1;
 	}
 
 	send_message = 1;									// internal flag to dictate who sends message
@@ -1047,6 +1050,16 @@ void hud_squadmsg_send_to_all_fighters( int command, int player_num )
 
 	Assert( aip->shipnum != -1 );
 	ordering_shipp = &Ships[aip->shipnum];
+
+	const bool wing_target_valid = hud_squadmsg_is_target_order_valid((size_t)command, aip, true);
+	const bool ship_target_valid = hud_squadmsg_is_target_order_valid((size_t)command, aip, false);
+
+	if (aip->target_objnum >= 0 && aip->target_objnum < MAX_OBJECTS && Objects[aip->target_objnum].type == OBJ_SHIP) {
+		target_shipnum = Objects[aip->target_objnum].instance;
+		if (target_shipnum >= 0 && target_shipnum < MAX_SHIPS) {
+			target_wingnum = Ships[target_shipnum].wingnum;
+		}
+	}
 
 	/* Goober5000 - this relies on the weird calling logic that is now disabled
 	if ( command == IGNORE_TARGET_ITEM ) {
@@ -1062,6 +1075,9 @@ void hud_squadmsg_send_to_all_fighters( int command, int player_num )
 	for ( i = 0; i < Num_wings; i++ ) {
 		int shipnum;
 
+		if (!wing_target_valid)
+			continue;
+
 		if ( (Wings[i].flags[Ship::Wing_Flags::Gone]) || (Wings[i].current_count == 0) )
 			continue;
 
@@ -1069,6 +1085,9 @@ void hud_squadmsg_send_to_all_fighters( int command, int player_num )
 			continue;
 
 		// get the first ship on the wing list and look at its team and then its type
+		if ((Wings[i].special_ship < 0) || (Wings[i].special_ship >= Wings[i].current_count))
+			continue;
+
 		shipnum = Wings[i].ship_index[Wings[i].special_ship];
 
 		// if special ship isn't valid then just move on
@@ -1076,12 +1095,17 @@ void hud_squadmsg_send_to_all_fighters( int command, int player_num )
 			continue;
 
 		shipp = &Ships[shipnum];
+		if (!hud_squadmsg_ship_valid(shipp, &Objects[shipp->objnum]))
+			continue;
 
 		// can't message if not on players team
 		if ( shipp->team != ordering_shipp->team )
 			continue;
 
 		// can't message if ship not fighter/bomber if the command isn't to everyone.
+		if ((Wings[i].special_ship_ship_info_index < 0) || (Wings[i].special_ship_ship_info_index >= static_cast<int>(Ship_info.size())))
+			continue;
+
 		if ( !(Ship_info[Wings[i].special_ship_ship_info_index].is_fighter_bomber()) )
 			continue;
 
@@ -1090,8 +1114,15 @@ void hud_squadmsg_send_to_all_fighters( int command, int player_num )
 		if (!shipp->orders_accepted.contains(command))
 			continue;
 
+		if (!hud_squadmsg_ship_order_valid(shipnum, command))
+			continue;
+
+		if ((command == ATTACK_TARGET_ITEM) && (target_wingnum == i))
+			continue;
+
 		// send the command to the wing
 		if ( Wings[i].current_count > 0 ) {
+			order_sent = true;
 			if (send_message) {
 				hud_add_issued_order("All Fighters", command);
 				if ( hud_squadmsg_send_wing_command(i, command, send_message, SQUADMSG_HISTORY_UPDATE, player_num) ) {
@@ -1107,6 +1138,9 @@ void hud_squadmsg_send_to_all_fighters( int command, int player_num )
 	// now find any friendly fighter/bomber ships not in wings
 	for (auto so: list_range(&Ship_obj_list)) {
 		auto objp = &Objects[so->objnum];
+		if (!ship_target_valid)
+			continue;
+
 		if (objp->flags[Object::Object_Flags::Should_be_dead])
 			continue;
 		if ( objp->type != OBJ_SHIP )
@@ -1115,6 +1149,9 @@ void hud_squadmsg_send_to_all_fighters( int command, int player_num )
 		// don't send messge to ships not on player's team, or that are in a wing.
 		shipp = &Ships[objp->instance];
 		if ( (shipp->team != ordering_shipp->team) || (shipp->wingnum != -1) )
+			continue;
+
+		if (!hud_squadmsg_ship_valid(shipp, objp))
 			continue;
 
 		// don't send message to non fighter wings
@@ -1129,6 +1166,13 @@ void hud_squadmsg_send_to_all_fighters( int command, int player_num )
 		if (!shipp->orders_accepted.contains(command))
 			continue;
 
+		if (!hud_squadmsg_ship_order_valid(objp->instance, command))
+			continue;
+
+		if ((command == PROTECT_TARGET_ITEM) && (target_shipnum == objp->instance))
+			continue;
+
+		order_sent = true;
 		if (send_message) {
 			hud_add_issued_order("All Fighters", command);
 			if ( hud_squadmsg_send_ship_command(objp->instance, command, send_message, SQUADMSG_HISTORY_UPDATE, player_num) ) {
@@ -1149,6 +1193,8 @@ void hud_squadmsg_send_to_all_fighters( int command, int player_num )
 		hud_squadmsg_send_ship_command( Msg_instance, command, 1 );
 	}
 	*/
+
+	return order_sent ? 1 : 0;
 }
 
 // Check if any enemy ships are in the mission
